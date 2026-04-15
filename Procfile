@@ -1,0 +1,1 @@
+web: gunicorn -w 4 -k uvicorn.workers.UvicornWorker backend.main:app & streamlit run app.py --server.port $PORT --server.address 0.0.0.0

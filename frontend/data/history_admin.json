@@ -1,0 +1,1 @@
+[{"timestamp": "2024-05-01 10:00:00", "event": "Login", "details": "Admin Access"}, {"timestamp": "2024-05-01 10:05:00", "event": "Scan", "details": "System Integrity Check"}, {"timestamp": "2024-05-01 10:15:00", "event": "Takedown", "details": "Mock Request Sent"}]
