@@ -363,21 +363,42 @@ def draw_main_app():
                         st.error(f"Scan failed: {e}")
 
             if st.session_state.scan_results:
-                # 1. Overview Table
+                # 1. Build DataFrame with a "Select" checkbox column
                 df = pd.DataFrame(st.session_state.scan_results)
+                df.insert(0, "Select", False)
+
                 st.markdown("#### 🚨 Detected Threats")
-                st.dataframe(df, use_container_width=True)
+                st.caption("✅ Tick the checkbox on a row to select that threat below.")
+
+                edited_df = st.data_editor(
+                    df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Select": st.column_config.CheckboxColumn(
+                            "Select",
+                            help="Tick to select this threat",
+                            default=False,
+                        )
+                    },
+                    disabled=[col for col in df.columns if col != "Select"],
+                    key="threat_table"
+                )
+
+                # 2. Derive selected URL from ticked row
+                selected_rows = edited_df[edited_df["Select"] == True]
+
+                if not selected_rows.empty:
+                    # If multiple ticked, use the first one
+                    selected_url = selected_rows.iloc[0]["url"]
+                    st.session_state.selected_threat_url = selected_url
+                else:
+                    selected_url = st.session_state.get("selected_threat_url", "")
 
                 st.markdown("---")
 
-                # 2. AI Reasoning + Takedown — single shared selectbox
+                # 3. AI Reasoning block — auto-populated from table selection
                 st.markdown("#### 🧠 AI Risk Intelligence & Intent Analysis")
-                urls = [item["url"] for item in st.session_state.scan_results]
-                selected_url = st.selectbox(
-                    "Select a detected URL to view AI Reasoning & take action:",
-                    urls,
-                    key="threat_selectbox"
-                )
 
                 if selected_url:
                     threat_data = next(
@@ -389,7 +410,6 @@ def draw_main_app():
                         col1, col2 = st.columns([1, 3])
 
                         with col1:
-                            # FIX: backend now returns "risk" (not "risk_level")
                             risk_val = threat_data.get("risk", "N/A")
                             st.metric("Risk Level", risk_val)
 
@@ -398,32 +418,33 @@ def draw_main_app():
                             st.markdown("**Intent Interpretation & Deception Analysis:**")
                             st.info(reasoning)
 
-                    # Selected-threat highlight box
-                    st.markdown(
-                        f"""
-                        <div style="background: rgba(248,113,113,0.12);
-                                    border: 1px solid rgba(248,113,113,0.45);
-                                    border-radius: 10px; padding: 14px 18px; margin: 10px 0;">
-                            <p style="margin:0 0 4px 0; font-size:11px; color:#f8a4a4; font-weight:600;">
-                                ⚠️ SELECTED THREAT
-                            </p>
-                            <p style="margin:0; font-size:14px; font-weight:600;
-                                      color:#ffffff; word-break:break-all;">
-                                🔗 {selected_url}
-                            </p>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-
-                    if st.button("⚖️ Proceed to Takedown"):
-                        st.session_state.takedown_url = selected_url
-                        st.session_state.selected_threat_url = selected_url
-                        st.session_state.generated_email = build_takedown_template(
-                            st.session_state.current_brand, selected_url
+                        # 4. Highlight box — reflects selected row automatically
+                        st.markdown(
+                            f"""
+                            <div style="background: rgba(248,113,113,0.12);
+                                        border: 1px solid rgba(248,113,113,0.45);
+                                        border-radius: 10px; padding: 14px 18px; margin: 10px 0;">
+                                <p style="margin:0 0 4px 0; font-size:11px; color:#f8a4a4; font-weight:600;">
+                                    ⚠️ SELECTED THREAT
+                                </p>
+                                <p style="margin:0; font-size:14px; font-weight:600;
+                                          color:#ffffff; word-break:break-all;">
+                                    🔗 {selected_url}
+                                </p>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
                         )
-                        st.session_state.page = "Takedown Requests"
-                        st.rerun()
+
+                        if st.button("⚖️ Proceed to Takedown"):
+                            st.session_state.takedown_url = selected_url
+                            st.session_state.generated_email = build_takedown_template(
+                                st.session_state.current_brand, selected_url
+                            )
+                            st.session_state.page = "Takedown Requests"
+                            st.rerun()
+                else:
+                    st.info("👆 Tick a row in the table above to view AI reasoning and take action.")
 
     # --- TAKEDOWN REQUESTS ---
     elif menu == "Takedown Requests":
