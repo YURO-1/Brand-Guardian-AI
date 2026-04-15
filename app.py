@@ -361,9 +361,37 @@ def draw_main_app():
                         st.error(f"Scan failed: {e}")
 
             if st.session_state.scan_results:
+                # 1. Display the Overview Table
                 df = pd.DataFrame(st.session_state.scan_results)
                 st.markdown("#### 🚨 Detected Threats")
                 st.dataframe(df, use_container_width=True)
+
+                # 2. Add the Reasoning Section for the Presentation
+                st.markdown("---")
+                st.markdown("#### 🧠 AI Risk Intelligence & Intent Analysis")
+                
+                # List the URLs so the user can select one to see the "Why"
+                urls = [item['url'] for item in st.session_state.scan_results]
+                selected_url = st.selectbox("Select a detected URL to view AI Reasoning:", urls)
+
+                if selected_url:
+                    # Find the specific result object for the selected URL
+                    threat_data = next((item for item in st.session_state.scan_results if item["url"] == selected_url), None)
+                    
+                    if threat_data:
+                        col1, col2 = st.columns([1, 3])
+                        
+                        with col1:
+                            # Display the risk level as a metric
+                            risk_val = threat_data.get('risk_level', 'N/A')
+                            st.metric("Risk Level", risk_val)
+                        
+                        with col2:
+                            # Display the AI's logic/intent interpretation
+                            # Note: Ensure your backend sends this under 'description' or 'reasoning'
+                            reasoning = threat_data.get('description', "No detailed reasoning provided by the model.")
+                            st.markdown("**Intent Interpretation & Deception Analysis:**")
+                            st.info(reasoning)
 
                 # Detect which column holds the URL
                 url_col = None
