@@ -340,7 +340,7 @@ def draw_main_app():
                 st.session_state.page = "Detections"
                 st.rerun()
 
-    # --- DETECTIONS ---
+# --- DETECTIONS ---
     elif menu == "Detections":
         st.subheader("🔍 Threat Detection")
         if not st.session_state.embedding_done:
@@ -357,61 +357,48 @@ def draw_main_app():
                         if res.status_code == 200:
                             st.session_state.scan_results = res.json().get("matches", [])
                             st.session_state.selected_threat_url = ""
+                        else:
+                            st.error(f"Scan error {res.status_code}: {res.text}")
                     except Exception as e:
                         st.error(f"Scan failed: {e}")
 
             if st.session_state.scan_results:
-                # 1. Display the Overview Table
+                # 1. Overview Table
                 df = pd.DataFrame(st.session_state.scan_results)
                 st.markdown("#### 🚨 Detected Threats")
                 st.dataframe(df, use_container_width=True)
 
-                # 2. Add the Reasoning Section for the Presentation
                 st.markdown("---")
+
+                # 2. AI Reasoning + Takedown — single shared selectbox
                 st.markdown("#### 🧠 AI Risk Intelligence & Intent Analysis")
-                
-                # List the URLs so the user can select one to see the "Why"
-                urls = [item['url'] for item in st.session_state.scan_results]
-                selected_url = st.selectbox("Select a detected URL to view AI Reasoning:", urls)
+                urls = [item["url"] for item in st.session_state.scan_results]
+                selected_url = st.selectbox(
+                    "Select a detected URL to view AI Reasoning & take action:",
+                    urls,
+                    key="threat_selectbox"
+                )
 
                 if selected_url:
-                    # Find the specific result object for the selected URL
-                    threat_data = next((item for item in st.session_state.scan_results if item["url"] == selected_url), None)
-                    
+                    threat_data = next(
+                        (item for item in st.session_state.scan_results if item["url"] == selected_url),
+                        None
+                    )
+
                     if threat_data:
                         col1, col2 = st.columns([1, 3])
-                        
+
                         with col1:
-                            # Display the risk level as a metric
-                            risk_val = threat_data.get('risk_level', 'N/A')
+                            # FIX: backend now returns "risk" (not "risk_level")
+                            risk_val = threat_data.get("risk", "N/A")
                             st.metric("Risk Level", risk_val)
-                        
+
                         with col2:
-                            # Display the AI's logic/intent interpretation
-                            # Note: Ensure your backend sends this under 'description' or 'reasoning'
-                            reasoning = threat_data.get('description', "No detailed reasoning provided by the model.")
+                            reasoning = threat_data.get("description", "No detailed reasoning provided by the model.")
                             st.markdown("**Intent Interpretation & Deception Analysis:**")
                             st.info(reasoning)
 
-                # Detect which column holds the URL
-                url_col = None
-                for col in ["url", "URL", "link", "source", "match_url", "page_url"]:
-                    if col in df.columns:
-                        url_col = col
-                        break
-
-                st.markdown("#### 🎯 Select a threat to action")
-                if url_col:
-                    url_options = df[url_col].tolist()
-                else:
-                    # Fall back to stringified first column value if no URL column
-                    first_col = df.columns[0]
-                    url_options = [str(row[first_col]) for _, row in df.iterrows()]
-
-                selected_url = st.selectbox("Choose a detected threat", url_options)
-
-                if selected_url:
-                    # Info box showing selected threat
+                    # Selected-threat highlight box
                     st.markdown(
                         f"""
                         <div style="background: rgba(248,113,113,0.12);
@@ -432,7 +419,6 @@ def draw_main_app():
                     if st.button("⚖️ Proceed to Takedown"):
                         st.session_state.takedown_url = selected_url
                         st.session_state.selected_threat_url = selected_url
-                        # Pre-fill the takedown email template
                         st.session_state.generated_email = build_takedown_template(
                             st.session_state.current_brand, selected_url
                         )
