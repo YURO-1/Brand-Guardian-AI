@@ -18,7 +18,6 @@ BASE_DIR = os.path.abspath(os.path.join(CURRENT_DIR, "../../"))
 TAKEDOWN_HISTORY_PATH = os.path.join(BASE_DIR, "data", "takedowns_history.json")
 
 def save_takedown_to_history(url, email, is_abuse, source):
-    """Logs every investigation attempt to the JSON database."""
     os.makedirs(os.path.dirname(TAKEDOWN_HISTORY_PATH), exist_ok=True)
     history = []
     if os.path.exists(TAKEDOWN_HISTORY_PATH):
@@ -37,7 +36,6 @@ def save_takedown_to_history(url, email, is_abuse, source):
         "date_str": time.strftime("%Y-%m-%d %H:%M:%S"),
         "status": "success" if email and "@" in str(email) else "failed"
     }
-    
     history.append(entry)
     try:
         with open(TAKEDOWN_HISTORY_PATH, "w") as f:
@@ -45,77 +43,142 @@ def save_takedown_to_history(url, email, is_abuse, source):
     except Exception as e:
         print(f"Failed to log history: {e}")
 
-def get_whois_fallback(url: str):
-    """Reliably extracts the domain and queries the WHOIS XML API."""
+def clean_domain(url: str) -> str:
+    """Reliably extract the bare registrable domain from any URL or raw domain string."""
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    parsed = urlparse(url)
+    netloc = parsed.netloc.split(":")[0]  # strip port
+    parts = netloc.split(".")
+    # Collapse subdomains — take only last two parts (e.g. www.manilaonsale.com -> manilaonsale.com)
+    domain = ".".join(parts[-2:]) if len(parts) >= 2 else netloc
+    return domain
+
+def get_whois_data(domain: str) -> dict:
+    """Query WhoisXML and return the full WhoisRecord dict."""
     if not WHOIS_API_KEY:
-        return None
+        return {}
     try:
-        # Extract base domain correctly (e.g., static.nike.com -> nike.com)
-        parsed = urlparse(url)
-        netloc = parsed.netloc or url.split('/')[0]
-        domain_parts = netloc.split('.')
-        if len(domain_parts) > 2:
-            domain = ".".join(domain_parts[-2:])
-        else:
-            domain = netloc
-        
-        whois_url = f"https://www.whoisxmlapi.com/whoisserver/WhoisService?apiKey={WHOIS_API_KEY}&domainName={domain}&outputFormat=JSON"
+        whois_url = (
+            f"https://www.whoisxmlapi.com/whoisserver/WhoisService"
+            f"?apiKey={WHOIS_API_KEY}&domainName={domain}&outputFormat=JSON"
+        )
         response = requests.get(whois_url, timeout=10)
         data = response.json()
-        record = data.get("WhoisRecord", {})
-        
-        # Search multiple layers of the WHOIS record for an email
-        email = (
-            record.get("contactEmail") or 
-            record.get("registrant", {}).get("email") or 
-            record.get("administrativeContact", {}).get("email")
-        )
-        return email
+        return data.get("WhoisRecord", {})
     except Exception as e:
         print(f"WHOIS API Error: {e}")
-        return None
+        return {}
+
+def extract_email_from_whois(record: dict) -> tuple[str | None, str]:
+    """
+    Walk through every useful WHOIS field to find a real email.
+    Returns (email, source_label).
+    """
+    # Direct contact email on the record
+    if record.get("contactEmail"):
+        return record["contactEmail"], "WHOIS contactEmail"
+
+    # Check all standard contact sections
+    for section in ["registrant", "administrativeContact", "technicalContact", "billingContact"]:
+        contact = record.get(section, {})
+        if isinstance(contact, dict) and contact.get("email"):
+            return contact["email"], f"WHOIS {section}"
+
+    # Some APIs nest contacts in a list
+    for contact in record.get("contacts", []):
+        if isinstance(contact, dict) and contact.get("email"):
+            return contact["email"], "WHOIS contacts[]"
+
+    # Last resort — scrape any email-like string from the raw text
+    raw_text = record.get("rawText", "")
+    emails_found = re.findall(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", raw_text)
+    # Filter out privacy-shield placeholder emails
+    real_emails = [
+        e for e in emails_found
+        if not any(skip in e.lower() for skip in [
+            "privacy", "whoisguard", "proxy", "protect", "redacted", "domainsbyproxy"
+        ])
+    ]
+    if real_emails:
+        return real_emails[0], "WHOIS rawText scrape"
+
+    return None, ""
+
+def get_hosting_abuse_email(domain: str) -> tuple[str | None, str]:
+    """
+    Resolve the domain to an IP, then look up the hosting provider's
+    abuse contact via ipinfo.io — useful when WHOIS is privacy-shielded.
+    """
+    try:
+        ip_resp = requests.get(f"https://ipinfo.io/{domain}/json", timeout=8)
+        ip_data = ip_resp.json()
+        org = ip_data.get("org", "")  # e.g. "AS16509 Amazon.com, Inc."
+        ip = ip_data.get("ip", "")
+
+        # Try abuse contact via RDAP/ipinfo abuse endpoint
+        abuse_resp = requests.get(f"https://ipinfo.io/{ip}/json?token=", timeout=8)
+        abuse_data = abuse_resp.json()
+        abuse_email = abuse_data.get("abuse", {}).get("email")
+        if abuse_email:
+            return abuse_email, f"Host abuse contact ({org})"
+    except Exception as e:
+        print(f"IP/Host lookup failed: {e}")
+    return None, ""
 
 @router.get("/investigate")
 async def investigate_site(url: str, request: Request):
-    """Main route to find contact info using AI Crawler -> WHOIS -> Pattern Guessing."""
-    if not url or not url.startswith("http"):
-        # If the URL is missing http, try to fix it once
-        url = "https://" + url if not url.startswith("http") else url
+    """Layered contact resolution: AI Crawler -> WHOIS (all fields + rawText) -> Host IP abuse -> Heuristic."""
+
+    if not url.startswith("http"):
+        url = "https://" + url
 
     detected_email = None
     source = "Initializing"
+    domain = clean_domain(url)
+
+    print(f"[Takedown] Investigating domain: {domain} (from URL: {url})")
 
     try:
-        # 1. Try the AI Contact Crawler (from app state)
+        # --- LAYER 1: AI Contact Crawler ---
         if hasattr(request.app.state, "contact_crawler"):
             try:
-                # Assuming crawler is an async function that returns a string/None
                 detected_email = await request.app.state.contact_crawler(url)
-                source = "AI Contact Agent"
+                if detected_email and "@" in str(detected_email):
+                    source = "AI Contact Agent"
+                    print(f"[Takedown] AI Crawler found: {detected_email}")
             except Exception as e:
                 print(f"AI Crawler failed: {e}")
 
-        # 2. If AI fails, trigger WHOIS API
+        # --- LAYER 2: WHOIS (deep field search + rawText scrape) ---
         if not detected_email or "@" not in str(detected_email):
-            print(f"AI search failed for {url}. Switching to WHOIS...")
-            detected_email = get_whois_fallback(url)
-            source = "WHOIS XML API"
+            print(f"[Takedown] Trying WHOIS for: {domain}")
+            record = get_whois_data(domain)
+            detected_email, source = extract_email_from_whois(record)
+            if detected_email:
+                print(f"[Takedown] WHOIS found: {detected_email} via {source}")
 
-        # 3. Final Fallback: Generate a logical 'abuse@domain' guess
+        # --- LAYER 3: Hosting provider abuse contact via IP lookup ---
         if not detected_email or "@" not in str(detected_email):
-            parsed = urlparse(url)
-            domain = parsed.netloc or "unknown.com"
+            print(f"[Takedown] Trying host IP abuse lookup for: {domain}")
+            detected_email, source = get_hosting_abuse_email(domain)
+            if detected_email:
+                print(f"[Takedown] Host abuse email found: {detected_email} via {source}")
+
+        # --- LAYER 4: Heuristic guess using the CLEAN domain ---
+        if not detected_email or "@" not in str(detected_email):
             detected_email = f"abuse@{domain}"
             source = "Heuristic Guess"
+            print(f"[Takedown] Falling back to heuristic: {detected_email}")
 
-        # Check if it's an official legal channel
         is_abuse = any(k in str(detected_email).lower() for k in ["abuse", "legal", "registrar", "copyright"])
-        
-        # Save results
+
         save_takedown_to_history(url, detected_email, is_abuse, source)
 
         return {
             "target_url": url,
+            "domain_used": domain,
             "email": detected_email,
             "is_official_abuse": is_abuse,
             "source": source,
@@ -124,10 +187,9 @@ async def investigate_site(url: str, request: Request):
 
     except Exception as e:
         print(f"Takedown Route Critical Error: {e}")
-        # Return a valid JSON even on error so the Frontend doesn't show "Could not reach server"
         return {
             "target_url": url,
-            "email": "investigation@brandguardian.ai",
+            "email": f"abuse@{domain}",
             "is_official_abuse": False,
             "source": "Error Fallback",
             "status": "partial_success"
