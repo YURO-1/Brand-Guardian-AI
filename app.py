@@ -58,7 +58,7 @@ def apply_theme():
     st.markdown("""
     <style>
     .block-container { padding-top: 1rem !important; padding-bottom: 0rem !important; }
-    [data-testid="stHeader"] { display: none; }
+    /*[data-testid="stHeader"] { display: none; } */
     [data-testid="stAppViewContainer"] {
         background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
         background-attachment: fixed;
