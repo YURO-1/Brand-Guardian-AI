@@ -457,21 +457,42 @@ def draw_main_app():
                 st.session_state.takedown_url or "<infringing URL>"
             )
 
+        def extract_domain(raw_url: str) -> str:
+            """Strip path/query/fragment — returns bare domain like thefreebieguy.com"""
+            from urllib.parse import urlparse
+            raw_url = raw_url.strip()
+            if not raw_url.startswith(("http://", "https://")):
+                raw_url = "https://" + raw_url
+            parsed = urlparse(raw_url)
+            domain = parsed.netloc.split(":")[0]
+            return domain or raw_url
+
         c1, c2 = st.columns(2)
         with c1:
             url = st.text_input("Infringement URL", value=st.session_state.takedown_url)
+
+            domain_for_lookup = extract_domain(url) if url else ""
+            if domain_for_lookup and domain_for_lookup != url:
+                st.caption(f"🔎 WHOIS lookup will use domain: **{domain_for_lookup}**")
+
             if st.button("Identify Host Contacts"):
-                try:
-                    res = requests.get(f"{BACKEND_URL}/takedown/investigate?url={url}")
-                    if res.status_code == 200:
-                        st.session_state.real_email = res.json().get('email', 'legal@host.com')
-                        # Refresh template with confirmed URL
-                        st.session_state.generated_email = build_takedown_template(
-                            st.session_state.current_brand, url
-                        )
-                        st.session_state.takedown_url = url
-                except Exception as e:
-                    st.error(f"Request failed: {e}")
+                if not url:
+                    st.warning("Please enter an infringement URL first.")
+                else:
+                    try:
+                        lookup_target = domain_for_lookup or url
+                        res = requests.get(f"{BACKEND_URL}/takedown/investigate?url={lookup_target}")
+                        if res.status_code == 200:
+                            st.session_state.real_email = res.json().get('email', 'legal@host.com')
+                            st.session_state.generated_email = build_takedown_template(
+                                st.session_state.current_brand, url
+                            )
+                            st.session_state.takedown_url = url
+                            st.success(f"✅ Host contact identified via **{lookup_target}**")
+                        else:
+                            st.error(f"Lookup failed ({res.status_code}): {res.text}")
+                    except Exception as e:
+                        st.error(f"Request failed: {e}")
 
         with c2:
             st.text_input("Recipient Email", value=st.session_state.real_email)
@@ -484,7 +505,6 @@ def draw_main_app():
             value=st.session_state.generated_email,
             height=280
         )
-        # Keep edits in session
         st.session_state.generated_email = edited
 
     # --- REPORTS ---
